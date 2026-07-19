@@ -240,7 +240,7 @@ def _new_writer(width: int, height: int) -> tuple[cv2.VideoWriter, str]:
     return writer, path
 
 
-# ── RTSP stream helpers ───────────────────────────────────────────────────────
+# ── Camera open helpers ───────────────────────────────────────────────────────
 def _open_rtsp(rtsp_url: str) -> cv2.VideoCapture | None:
     """Open the Tapo RTSP stream via FFmpeg backend.
 
@@ -255,34 +255,69 @@ def _open_rtsp(rtsp_url: str) -> cv2.VideoCapture | None:
     return cap
 
 
+def _open_rtsp_with_retries(rtsp_url: str, max_tries: int) -> cv2.VideoCapture | None:
+    """Try to open the RTSP stream up to max_tries times, waiting between each."""
+    for attempt in range(1, max_tries + 1):
+        print(f"[camera] Tapo connect attempt {attempt}/{max_tries} …")
+        cap = _open_rtsp(rtsp_url)
+        if cap is not None:
+            return cap
+        if attempt < max_tries:
+            time.sleep(config.TAPO_RECONNECT_DELAY_S)
+    return None
+
+
+def _open_local_camera(index: int) -> cv2.VideoCapture | None:
+    """Open a locally attached camera (USB or built-in) by index."""
+    cap = cv2.VideoCapture(index)
+    if not cap.isOpened():
+        return None
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  config.VIDEO_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.VIDEO_HEIGHT)
+    return cap
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def run(stop_event: threading.Event) -> None:
-    rtsp_url = config.TAPO_RTSP_URL
+    rtsp_url   = config.TAPO_RTSP_URL
+    using_rtsp = False   # tracks which source is active for reconnect logic
 
-    # Validate that TAPO_IP is configured
-    if not config.TAPO_IP:
-        print("[camera] TAPO_IP is not set — add it to your .env file. "
-              "Recording skipped.")
-        return
-    if not config.TAPO_PASSWORD:
-        print("[camera] TAPO_PASSWORD is not set — add it to your .env file. "
-              "Recording skipped.")
-        return
+    # ── Initial connection ────────────────────────────────────────────────────
+    if config.TAPO_IP and config.TAPO_PASSWORD:
+        print(f"[camera] Connecting to Tapo C530WS at {config.TAPO_IP} "
+              f"({config.TAPO_STREAM} stream) …")
+        cap = _open_rtsp_with_retries(rtsp_url, config.TAPO_MAX_CONNECT_TRIES)
+        if cap is not None:
+            using_rtsp = True
+        else:
+            print(
+                f"[camera] Tapo unreachable after {config.TAPO_MAX_CONNECT_TRIES} "
+                f"attempts — falling back to local camera "
+                f"(index {config.TAPO_FALLBACK_CAMERA_INDEX})."
+            )
+    else:
+        # TAPO_IP / TAPO_PASSWORD not configured — go straight to local camera
+        missing = "TAPO_IP" if not config.TAPO_IP else "TAPO_PASSWORD"
+        print(f"[camera] {missing} not set in .env — "
+              f"using local camera (index {config.TAPO_FALLBACK_CAMERA_INDEX}).")
+        cap = None
 
-    print(f"[camera] Connecting to Tapo C530WS at {config.TAPO_IP} "
-          f"({config.TAPO_STREAM} stream) …")
+    if not using_rtsp:
+        cap = _open_local_camera(config.TAPO_FALLBACK_CAMERA_INDEX)
+        if cap is None:
+            print(
+                f"[camera] Cannot open local camera "
+                f"(index {config.TAPO_FALLBACK_CAMERA_INDEX}). "
+                f"Recording skipped."
+            )
+            return
 
-    cap = _open_rtsp(rtsp_url)
-    if cap is None:
-        print(f"[camera] Cannot connect to RTSP stream at {config.TAPO_IP}. "
-              f"Check the IP, credentials, and that RTSP is enabled in the Tapo app. "
-              f"Recording skipped.")
-        return
-
-    # Resolution comes from the camera — do not force-set it over RTSP
+    # Resolution: RTSP reports its own; local camera honours the set request
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[camera] Connected — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
+    source_label = (f"Tapo RTSP ({config.TAPO_IP})" if using_rtsp
+                    else f"local camera [{config.TAPO_FALLBACK_CAMERA_INDEX}]")
+    print(f"[camera] {source_label} — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
 
     writer: cv2.VideoWriter | None = None
     seg_start   = time.time()
@@ -294,19 +329,29 @@ def run(stop_event: threading.Event) -> None:
 
         ok, frame = cap.read()
         if not ok:
-            # Network hiccup or camera rebooted — attempt reconnect
-            print(f"[camera] Stream lost — retrying in "
+            print(f"[camera] Feed lost — retrying in "
                   f"{config.TAPO_RECONNECT_DELAY_S:.0f} s …")
             cap.release()
             cap = None
             time.sleep(config.TAPO_RECONNECT_DELAY_S)
-            cap = _open_rtsp(rtsp_url)
-            if cap is None:
-                print("[camera] Reconnect failed — will retry …")
+
+            # Reconnect to whichever source is active
+            if using_rtsp:
+                cap = _open_rtsp(rtsp_url)
+                if cap is None:
+                    print("[camera] RTSP reconnect failed — will retry …")
+                else:
+                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    print(f"[camera] Tapo reconnected — {actual_w}×{actual_h}")
             else:
-                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                print(f"[camera] Reconnected — {actual_w}×{actual_h}")
+                cap = _open_local_camera(config.TAPO_FALLBACK_CAMERA_INDEX)
+                if cap is None:
+                    print("[camera] Local camera reconnect failed — will retry …")
+                else:
+                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    print(f"[camera] Local camera reconnected — {actual_w}×{actual_h}")
             continue
 
         # Burn overlay into frame

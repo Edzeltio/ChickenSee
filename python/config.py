@@ -68,8 +68,15 @@ def _build_rtsp_url() -> str:
 
 TAPO_RTSP_URL: str = _build_rtsp_url()
 
-# [CONFIG] Seconds to wait before retrying after a dropped RTSP connection.
+# [CONFIG] Seconds to wait between each RTSP connection attempt.
 TAPO_RECONNECT_DELAY_S: float = 5.0
+
+# [CONFIG] How many times to try the Tapo before giving up and using a local camera.
+TAPO_MAX_CONNECT_TRIES: int = 5
+
+# [CONFIG] Local camera index to fall back to when Tapo is unreachable.
+#   0 = first USB/built-in camera, 1 = second, etc.
+TAPO_FALLBACK_CAMERA_INDEX: int = int(os.environ.get("TAPO_FALLBACK_CAMERA_INDEX", "0"))
 
 # [CONFIG] Show a live preview window while recording.
 #   Raspberry Pi running headless (no monitor): keep False.
