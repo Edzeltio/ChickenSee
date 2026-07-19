@@ -42,13 +42,39 @@ SYNC_BATCH_SIZE: int = 500
 # [CONFIG] Seconds between Supabase sync attempts.
 SYNC_INTERVAL_S: float = 30.0
 
-# ── Camera / Recording ────────────────────────────────────────────────────────
-# [CONFIG] Camera index. 0 = first camera, 1 = second, …
-CAMERA_INDEX: int = 0
+# ── Tapo C530WS IP Camera (RTSP over Wi-Fi) ───────────────────────────────────
+# The Raspberry Pi and the Tapo camera both connect to the same router.
+# The camera streams video over RTSP — no USB cable needed.
+#
+# How to find / set credentials:
+#   1. Open the Tapo app → select your C530WS → tap ⚙ Settings
+#   2. Go to Advanced Settings → RTSP — enable it and set a username/password
+#   3. The camera's IP is shown under Device Info (or check your router's DHCP table)
+#
+# [CONFIG] Set all three in your .env file — do NOT hardcode credentials here.
+TAPO_IP:       str = os.environ.get("TAPO_IP",       "")      # e.g. "192.168.1.100"
+TAPO_USER:     str = os.environ.get("TAPO_USER",     "admin") # RTSP username you set in the app
+TAPO_PASSWORD: str = os.environ.get("TAPO_PASSWORD", "")      # RTSP password you set in the app
+
+# [CONFIG] Stream quality.
+#   "main" → high-quality stream (1080p / 2K)  — uses more bandwidth
+#   "sub"  → lower-resolution stream (~360p)   — better for slow networks
+TAPO_STREAM: str = os.environ.get("TAPO_STREAM", "main")
+
+# Built automatically — do not edit directly.
+def _build_rtsp_url() -> str:
+    stream_path = "stream1" if TAPO_STREAM.lower() == "main" else "stream2"
+    return f"rtsp://{TAPO_USER}:{TAPO_PASSWORD}@{TAPO_IP}:554/{stream_path}"
+
+TAPO_RTSP_URL: str = _build_rtsp_url()
+
+# [CONFIG] Seconds to wait before retrying after a dropped RTSP connection.
+TAPO_RECONNECT_DELAY_S: float = 5.0
 
 # [CONFIG] Show a live preview window while recording.
-#   Set False when running headless (RPi without a monitor).
-SHOW_PREVIEW: bool = True
+#   Raspberry Pi running headless (no monitor): keep False.
+#   Windows with a screen attached: set True.
+SHOW_PREVIEW: bool = IS_WINDOWS  # auto: True on Windows, False on RPi
 
 # [CONFIG] Folder where video segments are saved.
 VIDEO_SAVE_PATH: str = str(SENSOR_DIR / "recordings")

@@ -240,20 +240,49 @@ def _new_writer(width: int, height: int) -> tuple[cv2.VideoWriter, str]:
     return writer, path
 
 
+# ── RTSP stream helpers ───────────────────────────────────────────────────────
+def _open_rtsp(rtsp_url: str) -> cv2.VideoCapture | None:
+    """Open the Tapo RTSP stream via FFmpeg backend.
+
+    CAP_PROP_BUFFERSIZE = 1 keeps the frame close to real-time by
+    discarding buffered frames rather than playing them back late.
+    Returns None if the stream cannot be opened.
+    """
+    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        return None
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def run(stop_event: threading.Event) -> None:
-    cap = cv2.VideoCapture(config.CAMERA_INDEX)
-    if not cap.isOpened():
-        print(f"[camera] Cannot open camera {config.CAMERA_INDEX}. "
-              f"Try changing CAMERA_INDEX in config.py. Recording skipped.")
+    rtsp_url = config.TAPO_RTSP_URL
+
+    # Validate that TAPO_IP is configured
+    if not config.TAPO_IP:
+        print("[camera] TAPO_IP is not set — add it to your .env file. "
+              "Recording skipped.")
+        return
+    if not config.TAPO_PASSWORD:
+        print("[camera] TAPO_PASSWORD is not set — add it to your .env file. "
+              "Recording skipped.")
         return
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  config.VIDEO_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.VIDEO_HEIGHT)
+    print(f"[camera] Connecting to Tapo C530WS at {config.TAPO_IP} "
+          f"({config.TAPO_STREAM} stream) …")
 
+    cap = _open_rtsp(rtsp_url)
+    if cap is None:
+        print(f"[camera] Cannot connect to RTSP stream at {config.TAPO_IP}. "
+              f"Check the IP, credentials, and that RTSP is enabled in the Tapo app. "
+              f"Recording skipped.")
+        return
+
+    # Resolution comes from the camera — do not force-set it over RTSP
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[camera] Opened — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
+    print(f"[camera] Connected — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
 
     writer: cv2.VideoWriter | None = None
     seg_start   = time.time()
@@ -265,7 +294,19 @@ def run(stop_event: threading.Event) -> None:
 
         ok, frame = cap.read()
         if not ok:
-            time.sleep(0.1)
+            # Network hiccup or camera rebooted — attempt reconnect
+            print(f"[camera] Stream lost — retrying in "
+                  f"{config.TAPO_RECONNECT_DELAY_S:.0f} s …")
+            cap.release()
+            cap = None
+            time.sleep(config.TAPO_RECONNECT_DELAY_S)
+            cap = _open_rtsp(rtsp_url)
+            if cap is None:
+                print("[camera] Reconnect failed — will retry …")
+            else:
+                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                print(f"[camera] Reconnected — {actual_w}×{actual_h}")
             continue
 
         # Burn overlay into frame
@@ -331,7 +372,8 @@ def run(stop_event: threading.Event) -> None:
     # Cleanup
     if writer:
         writer.release()
-    cap.release()
+    if cap is not None:
+        cap.release()
     if config.SHOW_PREVIEW:
         cv2.destroyAllWindows()
     print("[camera] Stopped.")

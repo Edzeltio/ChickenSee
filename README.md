@@ -29,7 +29,36 @@ sensor/
 
 ## Setup
 
-### 1 — Python
+### 1 — Camera (TP-Link Tapo C530WS)
+
+The system uses the Tapo C530WS as a **wireless IP camera** — it connects to your
+Wi-Fi router, and the Raspberry Pi (or Windows PC) pulls a live RTSP video stream
+from it over the local network. No USB cable is needed.
+
+**Steps:**
+1. Mount and power the Tapo C530WS; add it to the Tapo app on your phone.
+2. In the Tapo app → select the camera → **Settings (⚙) → Advanced Settings → RTSP**
+   - Enable RTSP
+   - Set an RTSP **username** and **password** (you choose these)
+3. Find the camera's **local IP address** under **Device Info** in the app,
+   or check your router's DHCP client list.
+4. Add those values to your `.env` file (see step 3 — Credentials below):
+   ```
+   TAPO_IP=192.168.1.100      ← your camera's IP
+   TAPO_USER=admin            ← RTSP username you set in step 2
+   TAPO_PASSWORD=your-pass    ← RTSP password you set in step 2
+   TAPO_STREAM=main           ← "main" = 1080p/2K, "sub" = ~360p
+   ```
+   The software automatically connects to
+   `rtsp://<user>:<password>@<ip>:554/stream1` (main) or `/stream2` (sub).
+
+> **Tip — headless Raspberry Pi:** The preview window is disabled by default
+> on non-Windows systems. Run with a monitor attached, or set `SHOW_PREVIEW`
+> via the GUI if you want a live view.
+
+---
+
+### 2 — Python
 **Windows:** Download from https://www.python.org — check **"Add Python to PATH"** during install.
 
 **Raspberry Pi:**
@@ -37,7 +66,7 @@ sensor/
 sudo apt install -y python3 python3-pip
 ```
 
-### 2 — Arduino IDE
+### 3 — Arduino IDE
 1. Download from https://www.arduino.cc/en/software
 2. Open Arduino IDE → **Tools → Manage Libraries**, install:
    - `DHT sensor library` by Adafruit
@@ -46,17 +75,17 @@ sudo apt install -y python3 python3-pip
 4. Select **Tools → Port** → your Arduino COM port
 5. Click **Upload**
 
-### 3 — Credentials
+### 4 — Credentials
 ```bash
 # Windows
-copy sensor\.env.example sensor\.env
-notepad sensor\.env
+copy .env.example .env
+notepad .env
 
 # Raspberry Pi
-cp sensor/.env.example sensor/.env
-nano sensor/.env
+cp .env.example .env
+nano .env
 ```
-Fill in `SUPABASE_URL` and `SUPABASE_KEY`, save.
+Fill in `SUPABASE_URL`, `SUPABASE_KEY`, `TAPO_IP`, `TAPO_USER`, and `TAPO_PASSWORD`, then save.
 
 ### 4 — Supabase table (run once in SQL Editor)
 ```sql
@@ -99,8 +128,8 @@ CREATE INDEX ON sensor_logs (sound_status)   WHERE sound_status   > 0;
 
 **Raspberry Pi:**
 ```bash
-chmod +x sensor/start.sh
-./sensor/start.sh
+chmod +x start.sh
+./start.sh
 ```
 
 ---
@@ -111,10 +140,14 @@ All settings are in `sensor/python/config.py` — every tunable value is marked 
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `SERIAL_PORT` | `COM3` / `/dev/ttyACM0` | Arduino USB port |
+| `SERIAL_PORT` | `COM4` / `/dev/ttyACM0` | Arduino USB port |
 | `SERIAL_BAUD` | `115200` | Must match Arduino sketch |
-| `CAMERA_INDEX` | `0` | 0 = first camera |
-| `SHOW_PREVIEW` | `True` | Set `False` for headless RPi |
+| `TAPO_IP` | *(from .env)* | Camera's local IP address |
+| `TAPO_USER` | `admin` | RTSP username set in Tapo app |
+| `TAPO_PASSWORD` | *(from .env)* | RTSP password set in Tapo app |
+| `TAPO_STREAM` | `main` | `"main"` = 1080p/2K, `"sub"` = ~360p |
+| `TAPO_RECONNECT_DELAY_S` | `5.0` | Seconds between reconnect attempts |
+| `SHOW_PREVIEW` | `True` on Windows, `False` on RPi | Live preview window |
 | `VIDEO_SEGMENT_DURATION` | `3600` | Seconds per file (1 hour) |
 | `SYNC_INTERVAL_S` | `30` | Supabase sync every 30 s |
 | `MQ137_MAX_PPM` | `100` | Calibrate against reference gas |
