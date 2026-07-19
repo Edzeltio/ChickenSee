@@ -5,7 +5,6 @@
 !.gitignore
 
 # Keep tracked files and their parent directories
-!.replit
 !README.md
 !.env.example
 !requirements.txt
