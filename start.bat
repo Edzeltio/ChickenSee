@@ -1,6 +1,6 @@
 @echo off
 :: ════════════════════════════════════════════════════════════════════════════
-:: start.bat  —  Windows launcher for the Python sensor logger.
+:: start.bat  —  Windows mini-PC launcher for the Python sensor logger.
 ::
 :: [CONFIG] If Python is not on PATH, set the full path here:
 ::   set PYTHON="C:\Users\YourName\AppData\Local\Programs\Python\Python312\python.exe"
@@ -54,6 +54,6 @@ if not exist "%~dp0.env" (
 echo Starting...
 echo.
 cd /d "%~dp0"
-%PYTHON% python\main.py
+%PYTHON% python\main.py %*
 
 pause

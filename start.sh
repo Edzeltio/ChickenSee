@@ -1,6 +1,6 @@
 #!/bin/bash
 # ════════════════════════════════════════════════════════════════════════════
-# start.sh  —  Raspberry Pi launcher for the Python sensor logger.
+# start.sh  —  Linux mini-PC launcher for the Python sensor logger.
 # ════════════════════════════════════════════════════════════════════════════
 
 set -e
@@ -17,9 +17,9 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 # ── Install dependencies if missing ────────────────────────────────────────
-if ! python3 -c "import serial" &>/dev/null; then
+if ! python3 -c "import serial, dotenv" &>/dev/null; then
     echo "[setup] Installing Python dependencies..."
-    pip3 install -r requirements.txt
+    python3 -m pip install -r requirements.txt
 fi
 
 # ── Copy .env if missing ────────────────────────────────────────────────────
@@ -31,8 +31,8 @@ if [ ! -f .env ]; then
     echo
 fi
 
-# ── Grant serial port permission (once) ─────────────────────────────────────
-if ! groups "$USER" | grep -q dialout; then
+# ── Grant serial port permission (once; not needed in simulation mode) ───────
+if [[ " $* " != *" --simulate "* ]] && getent group dialout >/dev/null 2>&1 && ! groups "$USER" | grep -q dialout; then
     echo "[setup] Adding $USER to dialout group (required for serial port)..."
     sudo usermod -a -G dialout "$USER"
     echo "        Log out and back in, then re-run this script."
@@ -42,4 +42,4 @@ fi
 # ── Start ───────────────────────────────────────────────────────────────────
 echo "Starting... (Ctrl+C to stop)"
 echo
-python3 python/main.py
+python3 python/main.py "$@"

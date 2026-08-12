@@ -6,6 +6,7 @@ All [CONFIG] labels mark values you may need to change.
 import os
 import platform
 from pathlib import Path
+from urllib.parse import quote
 
 # Detect platform
 IS_WINDOWS: bool = platform.system() == "Windows"
@@ -13,14 +14,29 @@ IS_WINDOWS: bool = platform.system() == "Windows"
 # Root sensor/ directory (one level up from python/)
 SENSOR_DIR: Path = Path(__file__).parent.parent
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable without accepting ambiguous values."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ── Serial Port ───────────────────────────────────────────────────────────────
-# [CONFIG] USB port the Arduino Uno is connected to.
+# [CONFIG] USB port the Arduino Uno is connected to. Leave blank to auto-detect.
 #   Windows      : "COM3", "COM4" … (check Arduino IDE → Tools → Port)
-#   Raspberry Pi : "/dev/ttyACM0"  or  "/dev/ttyUSB0"
-SERIAL_PORT: str = "COM4" if IS_WINDOWS else "/dev/ttyACM0"
+#   Linux        : "/dev/ttyACM0"  or  "/dev/ttyUSB0"
+SERIAL_PORT: str = os.environ.get("SERIAL_PORT", "").strip()
 
 # [CONFIG] Must match BAUD_RATE in sensor_reader.ino
 SERIAL_BAUD: int = 115200
+
+# Run without an Arduino. This exercises the database, sync, and camera
+# overlay while the mini PC is being commissioned.
+SIMULATE: bool = _env_bool("SIMULATE", False)
+SIMULATION_INTERVAL_S: float = float(
+    os.environ.get("SIMULATION_INTERVAL_S", "2.0")
+)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # [CONFIG] Path to the local SQLite file.
@@ -42,36 +58,84 @@ SYNC_BATCH_SIZE: int = 500
 # [CONFIG] Seconds between Supabase sync attempts.
 SYNC_INTERVAL_S: float = 30.0
 
-# ── Tapo C530WS IP Camera (RTSP over Wi-Fi) ───────────────────────────────────
-# The Raspberry Pi and the Tapo camera both connect to the same router.
-# The camera streams video over RTSP — no USB cable needed.
+# ── Tapo C530WS IP Camera (RTSP over Wi-Fi or routed network) ─────────────────
+# The mini PC can reach the camera locally, through a VPN, or through a
+# firewall/NAT rule that forwards an external RTSP port to the camera.
 #
 # How to find / set credentials:
 #   1. Open the Tapo app → select your C530WS → tap ⚙ Settings
 #   2. Go to Advanced Settings → RTSP — enable it and set a username/password
-#   3. The camera's IP is shown under Device Info (or check your router's DHCP table)
+#   3. Set TAPO_CONNECTION_MODE to local, remote, or auto in .env
 #
-# [CONFIG] Set all three in your .env file — do NOT hardcode credentials here.
-TAPO_IP:       str = os.environ.get("TAPO_IP",       "")      # e.g. "192.168.1.100"
-TAPO_USER:     str = os.environ.get("TAPO_USER",     "admin") # RTSP username you set in the app
-TAPO_PASSWORD: str = os.environ.get("TAPO_PASSWORD", "")      # RTSP password you set in the app
+# local: try only the camera's LAN address
+# remote: try only TAPO_REMOTE_RTSP_URL or TAPO_REMOTE_HOST
+# auto: try local first, then remote (recommended when the mini PC may move)
+TAPO_CONNECTION_MODE: str = os.environ.get(
+    "TAPO_CONNECTION_MODE", "auto"
+).strip().lower()
+TAPO_IP:       str = os.environ.get("TAPO_IP", "").strip()
+TAPO_USER:     str = os.environ.get("TAPO_USER", "admin")
+TAPO_PASSWORD: str = os.environ.get("TAPO_PASSWORD", "")
 
 # [CONFIG] Stream quality.
 #   "main" → high-quality stream (1080p / 2K)  — uses more bandwidth
 #   "sub"  → lower-resolution stream (~360p)   — better for slow networks
 TAPO_STREAM: str = os.environ.get("TAPO_STREAM", "main")
 
-# Built automatically — do not edit directly.
-def _build_rtsp_url() -> str:
-    stream_path = "stream1" if TAPO_STREAM.lower() == "main" else "stream2"
-    return f"rtsp://{TAPO_USER}:{TAPO_PASSWORD}@{TAPO_IP}:554/{stream_path}"
+# You can provide a complete URL when a router/VPN uses a non-standard path or
+# port. Otherwise the host/port settings below build the standard stream URL.
+TAPO_LOCAL_RTSP_URL: str = os.environ.get("TAPO_LOCAL_RTSP_URL", "").strip()
+TAPO_REMOTE_RTSP_URL: str = os.environ.get("TAPO_REMOTE_RTSP_URL", "").strip()
+TAPO_REMOTE_HOST: str = os.environ.get("TAPO_REMOTE_HOST", "").strip()
+TAPO_LOCAL_PORT: int = int(os.environ.get("TAPO_LOCAL_PORT", "554"))
+TAPO_REMOTE_PORT: int = int(os.environ.get("TAPO_REMOTE_PORT", "554"))
 
-TAPO_RTSP_URL: str = _build_rtsp_url()
+
+def _build_rtsp_url(host: str, port: int) -> str:
+    """Build an RTSP URL while safely escaping credentials with special chars."""
+    if not host:
+        return ""
+    stream_path = "stream1" if TAPO_STREAM.lower() == "main" else "stream2"
+    user = quote(TAPO_USER, safe="")
+    password = quote(TAPO_PASSWORD, safe="")
+    return f"rtsp://{user}:{password}@{host}:{port}/{stream_path}"
+
+
+def get_tapo_endpoints() -> list[tuple[str, str]]:
+    """Return ordered (label, URL) endpoints according to connection mode."""
+    local_url = TAPO_LOCAL_RTSP_URL or _build_rtsp_url(TAPO_IP, TAPO_LOCAL_PORT)
+    remote_url = TAPO_REMOTE_RTSP_URL or _build_rtsp_url(
+        TAPO_REMOTE_HOST, TAPO_REMOTE_PORT
+    )
+    mode = (
+        TAPO_CONNECTION_MODE
+        if TAPO_CONNECTION_MODE in {"local", "remote", "auto"}
+        else "auto"
+    )
+    candidates = []
+    if mode in {"local", "auto"} and local_url:
+        candidates.append(("local", local_url))
+    if mode in {"remote", "auto"} and remote_url:
+        candidates.append(("remote", remote_url))
+
+    unique = []
+    seen = set()
+    for label, url in candidates:
+        if url not in seen:
+            unique.append((label, url))
+            seen.add(url)
+    return unique
+
+
+# Backwards-compatible name used by older integrations.
+TAPO_RTSP_URL: str = TAPO_LOCAL_RTSP_URL or _build_rtsp_url(
+    TAPO_IP, TAPO_LOCAL_PORT
+)
 
 # [CONFIG] Seconds to wait between each RTSP connection attempt.
 TAPO_RECONNECT_DELAY_S: float = 5.0
 
-# [CONFIG] How many times to try the Tapo before giving up and using a local camera.
+# [CONFIG] How many rounds to try Tapo endpoints before using a USB camera.
 TAPO_MAX_CONNECT_TRIES: int = 5
 
 # [CONFIG] Local camera index to fall back to when Tapo is unreachable.
@@ -79,9 +143,8 @@ TAPO_MAX_CONNECT_TRIES: int = 5
 TAPO_FALLBACK_CAMERA_INDEX: int = int(os.environ.get("TAPO_FALLBACK_CAMERA_INDEX", "0"))
 
 # [CONFIG] Show a live preview window while recording.
-#   Raspberry Pi running headless (no monitor): keep False.
-#   Windows with a screen attached: set True.
-SHOW_PREVIEW: bool = IS_WINDOWS  # auto: True on Windows, False on RPi
+# Set SHOW_PREVIEW=false for a mini PC running without a desktop session.
+SHOW_PREVIEW: bool = _env_bool("SHOW_PREVIEW", IS_WINDOWS)
 
 # [CONFIG] Folder where video segments are saved.
 VIDEO_SAVE_PATH: str = str(SENSOR_DIR / "recordings")

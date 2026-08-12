@@ -10,6 +10,8 @@ Pipeline:
 """
 
 import json
+import math
+import random
 import threading
 import time
 
@@ -98,9 +100,20 @@ def run(stop_event: threading.Event) -> None:
     # Show last known readings on the overlay while connecting.
     _seed_from_db()
 
+    if config.SIMULATE:
+        print(
+            f"[collector] Simulation mode enabled — generating readings every "
+            f"{config.SIMULATION_INTERVAL_S:g} s (no Arduino required)."
+        )
+        _simulation_loop(stop_event)
+        return
+
     port = config.SERIAL_PORT or _find_port()
     if not port:
-        print("[collector] Cannot auto-detect Arduino. Set SERIAL_PORT in config.py.")
+        print(
+            "[collector] Arduino not found. Set SERIAL_PORT or run with "
+            "--simulate to test without hardware."
+        )
         return
 
     while not stop_event.is_set():
@@ -108,10 +121,30 @@ def run(stop_event: threading.Event) -> None:
             _read_loop(port, stop_event)
         except serial.SerialException as exc:
             print(f"[collector] Serial error: {exc} — retrying in 5 s …")
-            time.sleep(5)
+            stop_event.wait(5)
         except Exception as exc:
             print(f"[collector] Unexpected error: {exc} — retrying in 5 s …")
-            time.sleep(5)
+            stop_event.wait(5)
+
+
+def _simulation_loop(stop_event: threading.Event) -> None:
+    """Generate realistic sensor payloads so the full pipeline can be tested."""
+    started = time.monotonic()
+    while not stop_event.is_set():
+        elapsed = time.monotonic() - started
+        # Small variations keep the overlay and database useful during a test.
+        temperature = round(24.0 + 2.0 * math.sin(elapsed / 45.0) + random.uniform(-0.4, 0.4), 1)
+        humidity = round(60.0 + 7.0 * math.sin(elapsed / 60.0 + 1.0) + random.uniform(-1.0, 1.0), 1)
+        ammonia_raw = max(0, min(1023, int(110 + 25 * math.sin(elapsed / 35.0) + random.uniform(-8, 8))))
+        sound_raw = max(0, min(1023, int(500 + 70 * math.sin(elapsed / 12.0) + random.uniform(-35, 35))))
+        _process({
+            "temperature": temperature,
+            "humidity": humidity,
+            "mq137_raw": ammonia_raw,
+            "sound_rms": sound_raw,
+            "warming": False,
+        })
+        stop_event.wait(config.SIMULATION_INTERVAL_S)
 
 
 def _read_loop(port: str, stop_event: threading.Event) -> None:

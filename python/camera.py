@@ -255,16 +255,22 @@ def _open_rtsp(rtsp_url: str) -> cv2.VideoCapture | None:
     return cap
 
 
-def _open_rtsp_with_retries(rtsp_url: str, max_tries: int) -> cv2.VideoCapture | None:
-    """Try to open the RTSP stream up to max_tries times, waiting between each."""
+def _open_rtsp_with_retries(
+    endpoints: list[tuple[str, str]], max_tries: int
+) -> tuple[cv2.VideoCapture | None, str | None, int | None]:
+    """Try local/remote endpoints in order for each retry round."""
     for attempt in range(1, max_tries + 1):
-        print(f"[camera] Tapo connect attempt {attempt}/{max_tries} …")
-        cap = _open_rtsp(rtsp_url)
-        if cap is not None:
-            return cap
+        for index, (label, rtsp_url) in enumerate(endpoints):
+            print(
+                f"[camera] Tapo {label} connect attempt "
+                f"{attempt}/{max_tries} …"
+            )
+            cap = _open_rtsp(rtsp_url)
+            if cap is not None:
+                return cap, rtsp_url, index
         if attempt < max_tries:
             time.sleep(config.TAPO_RECONNECT_DELAY_S)
-    return None
+    return None, None, None
 
 
 def _open_local_camera(index: int) -> cv2.VideoCapture | None:
@@ -279,27 +285,33 @@ def _open_local_camera(index: int) -> cv2.VideoCapture | None:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def run(stop_event: threading.Event) -> None:
-    rtsp_url   = config.TAPO_RTSP_URL
+    tapo_endpoints = config.get_tapo_endpoints()
+    rtsp_url: str | None = None
+    tapo_endpoint_index: int | None = None
     using_rtsp = False   # tracks which source is active for reconnect logic
 
     # ── Initial connection ────────────────────────────────────────────────────
-    if config.TAPO_IP and config.TAPO_PASSWORD:
-        print(f"[camera] Connecting to Tapo C530WS at {config.TAPO_IP} "
-              f"({config.TAPO_STREAM} stream) …")
-        cap = _open_rtsp_with_retries(rtsp_url, config.TAPO_MAX_CONNECT_TRIES)
+    if tapo_endpoints:
+        print(
+            f"[camera] Connecting to Tapo ({config.TAPO_CONNECTION_MODE} mode; "
+            f"{len(tapo_endpoints)} endpoint(s); {config.TAPO_STREAM} stream) …"
+        )
+        cap, rtsp_url, tapo_endpoint_index = _open_rtsp_with_retries(
+            tapo_endpoints, config.TAPO_MAX_CONNECT_TRIES
+        )
         if cap is not None:
             using_rtsp = True
         else:
             print(
-                f"[camera] Tapo unreachable after {config.TAPO_MAX_CONNECT_TRIES} "
-                f"attempts — falling back to local camera "
+                f"[camera] Tapo endpoints unreachable after "
+                f"{config.TAPO_MAX_CONNECT_TRIES} rounds — falling back to local camera "
                 f"(index {config.TAPO_FALLBACK_CAMERA_INDEX})."
             )
     else:
-        # TAPO_IP / TAPO_PASSWORD not configured — go straight to local camera
-        missing = "TAPO_IP" if not config.TAPO_IP else "TAPO_PASSWORD"
-        print(f"[camera] {missing} not set in .env — "
-              f"using local camera (index {config.TAPO_FALLBACK_CAMERA_INDEX}).")
+        print(
+            "[camera] No Tapo endpoint configured — using local camera "
+            f"(index {config.TAPO_FALLBACK_CAMERA_INDEX})."
+        )
         cap = None
 
     if not using_rtsp:
@@ -315,7 +327,8 @@ def run(stop_event: threading.Event) -> None:
     # Resolution: RTSP reports its own; local camera honours the set request
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    source_label = (f"Tapo RTSP ({config.TAPO_IP})" if using_rtsp
+    source_label = (f"Tapo RTSP ({tapo_endpoints[tapo_endpoint_index][0]})"
+                    if using_rtsp and tapo_endpoint_index is not None
                     else f"local camera [{config.TAPO_FALLBACK_CAMERA_INDEX}]")
     print(f"[camera] {source_label} — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
 
@@ -337,13 +350,16 @@ def run(stop_event: threading.Event) -> None:
 
             # Reconnect to whichever source is active
             if using_rtsp:
-                cap = _open_rtsp(rtsp_url)
+                cap, rtsp_url, tapo_endpoint_index = _open_rtsp_with_retries(
+                    tapo_endpoints, 1
+                )
                 if cap is None:
                     print("[camera] RTSP reconnect failed — will retry …")
                 else:
                     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    print(f"[camera] Tapo reconnected — {actual_w}×{actual_h}")
+                    label = tapo_endpoints[tapo_endpoint_index][0]
+                    print(f"[camera] Tapo {label} reconnected — {actual_w}×{actual_h}")
             else:
                 cap = _open_local_camera(config.TAPO_FALLBACK_CAMERA_INDEX)
                 if cap is None:

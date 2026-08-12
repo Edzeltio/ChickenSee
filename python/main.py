@@ -10,6 +10,8 @@ Flow:
 Press Ctrl+C or close the preview window to stop cleanly.
 """
 
+import argparse
+import os
 import signal
 import sys
 import threading
@@ -18,6 +20,17 @@ from pathlib import Path
 # ── 1. Load .env before importing anything that reads env vars ────────────────
 from dotenv import load_dotenv
 
+_parser = argparse.ArgumentParser(description="Poultry sensor logger")
+_parser.add_argument(
+    "--simulate", action="store_true",
+    help="generate sensor readings without an Arduino",
+)
+_parser.add_argument(
+    "--no-ui", action="store_true",
+    help="skip the Tkinter setup window and use settings.json",
+)
+_args = _parser.parse_args()
+
 _env_path = Path(__file__).parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
@@ -25,12 +38,19 @@ if _env_path.exists():
 else:
     print(f"[main] No .env found at {_env_path} — using system environment variables.")
 
+if _args.simulate:
+    os.environ["SIMULATE"] = "1"
+
 # ── 2. Show the configuration UI ─────────────────────────────────────────────
 # This blocks until the user clicks "Start Monitoring" (or exits).
 import setup_ui   # noqa: E402
 
-print("[main] Opening configuration window …")
-settings = setup_ui.show()   # returns dict; calls sys.exit(0) if window closed
+if _args.no_ui:
+    print("[main] Setup UI skipped — using settings.json.")
+    settings = setup_ui.load_settings()
+else:
+    print("[main] Opening configuration window …")
+    settings = setup_ui.show()   # returns dict; calls sys.exit(0) if window closed
 print("[main] Configuration confirmed — starting system …")
 
 # ── 3. Apply settings to config + camera ─────────────────────────────────────
