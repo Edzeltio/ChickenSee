@@ -68,9 +68,6 @@ const float b = 0.323;      // Intercept from the MQ-137 datasheet log-log curve
 // [CONFIG] Number of ADC samples used to compute sound RMS.
 #define SOUND_SAMPLES        100
 
-// [CONFIG] DC midpoint of the LM386 output (ADC counts, 0–1023).
-#define SOUND_DC_OFFSET      512
-
 // [CONFIG] How many times to retry a failed DHT22 read before sending null.
 #define DHT_RETRIES          5
 
@@ -84,8 +81,6 @@ const float b = 0.323;      // Intercept from the MQ-137 datasheet log-log curve
 DHT dht(DHT_PIN, DHT_TYPE);
 
 unsigned long lastSampleAt = 0;
-int lastMq137Raw = 0;
-int lastSoundRms = 0;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -100,7 +95,6 @@ float readMQ137AndCalculatePPM() {
     delay(5);
   }
   float rawAverage = (float)sum / MQ137_SAMPLES;
-  lastMq137Raw = (int)round(rawAverage);
   float VRL = rawAverage * (5.0 / 1023.0); 
   
   // Safety clipping to prevent division-by-zero or infinite logs
@@ -127,14 +121,21 @@ float readMQ137AndCalculatePPM() {
   then converts it into decibel (dB) pressure levels.
 */
 float readSoundAndCalculateDB() {
+  // The LM386 output's DC midpoint is not guaranteed to be exactly 512 and
+  // can move with supply voltage and gain. Measure the midpoint for this
+  // sample window, then calculate only the AC variation around it.
+  long sum = 0;
   long sumSq = 0;
   for (int i = 0; i < SOUND_SAMPLES; i++) {
-    long s = (long)analogRead(SOUND_PIN) - SOUND_DC_OFFSET;
-    sumSq += s * s;
+    long sample = analogRead(SOUND_PIN);
+    sum += sample;
+    sumSq += sample * sample;
     delay(2);
   }
-  float rms = sqrt((float)sumSq / SOUND_SAMPLES);
-  lastSoundRms = (int)round(rms);
+  float midpoint = (float)sum / SOUND_SAMPLES;
+  float variance = ((float)sumSq / SOUND_SAMPLES) - (midpoint * midpoint);
+  if (variance < 0.0) variance = 0.0;
+  float rms = sqrt(variance);
   float volts = (rms * 5.0) / 1023.0;
   
   float db = 35.0; // Baseline room noise
@@ -143,7 +144,7 @@ float readSoundAndCalculateDB() {
   }
   
   if (db < 35.0) db = 35.0;
-  if (db > 120.0) db = 120.0;
+  if (db > 90.0) db = 90.0;
   
   return db;
 }
@@ -213,26 +214,20 @@ void loop() {
     json += hbuf;
   }
 
-  json += F(",\"ammonia_ppm\":");
-  char abuf[10];
-  dtostrf(ammonia_ppm, 1, 2, abuf); // Ammonia output formatted to 2 decimals
-  json += abuf;
+  // Keep the wire format limited to the four required sensor values.
+  json += F(",\"ammonia\":");
+  if (warming) {
+    json += F("null");
+  } else {
+    char abuf[10];
+    dtostrf(ammonia_ppm, 1, 2, abuf);
+    json += abuf;
+  }
 
-  // Raw ADC values are included for the Python logger's canonical
-  // conversions and for calibration/debugging.
-  json += F(",\"mq137_raw\":");
-  json += lastMq137Raw;
-
-  json += F(",\"sound_db\":");
+  json += F(",\"sound\":");
   char sbuf[10];
-  dtostrf(sound_db, 1, 1, sbuf); // Sound dB output formatted to 1 decimal
+  dtostrf(sound_db, 1, 1, sbuf);
   json += sbuf;
-
-  json += F(",\"sound_rms\":");
-  json += lastSoundRms;
-
-  json += F(",\"warming\":");
-  json += warming;
 
   json += '}';
 

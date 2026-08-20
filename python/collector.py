@@ -198,12 +198,12 @@ def _process(payload: dict) -> None:
     ammonia_ppm = None if warming else (
         config.adc_to_ppm(ammonia_raw)
         if ammonia_raw is not None
-        else payload.get("ammonia_ppm")
+        else payload.get("ammonia_ppm", payload.get("ammonia"))
     )
     sound_db = (
         config.adc_to_db(sound_raw)
         if sound_raw is not None
-        else payload.get("sound_db")
+        else payload.get("sound_db", payload.get("sound"))
     )
 
     t_status = config.eval_temp(temperature)

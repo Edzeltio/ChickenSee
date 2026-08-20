@@ -49,8 +49,19 @@ def _sync_once() -> int:
 
         ids = [r["id"] for r in rows]
 
-        # Remove the local-only 'synced' key before uploading
-        payload = [{k: v for k, v in r.items() if k != "synced"} for r in rows]
+        # Upload the required telemetry fields only. Local raw ADC values and
+        # alert bookkeeping remain local implementation details.
+        payload = [
+            {
+                "id": r["id"],
+                "recorded_at": r["recorded_at"],
+                "temperature": r["temperature"],
+                "humidity": r["humidity"],
+                "ammonia_ppm": r["ammonia_ppm"],
+                "sound_db": r["sound_db"],
+            }
+            for r in rows
+        ]
 
         try:
             client.table(config.SUPABASE_TABLE).upsert(payload).execute()
