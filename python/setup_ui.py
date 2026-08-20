@@ -169,8 +169,9 @@ def _row(parent, label: str, *widgets, hint: str = "") -> tk.Frame:
 # ── Main UI class ─────────────────────────────────────────────────────────────
 
 class SetupUI:
-    def __init__(self):
+    def __init__(self, exit_on_close: bool = True):
         self.result: dict | None = None
+        self.exit_on_close = exit_on_close
         self.settings = load_settings()
 
         self.root = tk.Tk()
@@ -725,7 +726,8 @@ class SetupUI:
         if messagebox.askokcancel("Quit", "Cancel setup and exit the program?",
                                   parent=self.root):
             self.root.destroy()
-            sys.exit(0)
+            if self.exit_on_close:
+                sys.exit(0)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -759,13 +761,13 @@ class SetupUI:
 
 # ── Convenience entry point ───────────────────────────────────────────────────
 
-def show() -> dict:
+def show(exit_on_close: bool = True) -> dict | None:
     """
     Show the setup window and return the chosen settings dict.
     Calls sys.exit(0) if the user closes the window without clicking Start.
     """
-    ui = SetupUI()
+    ui = SetupUI(exit_on_close=exit_on_close)
     result = ui.show()
-    if result is None:
+    if result is None and exit_on_close:
         sys.exit(0)
     return result

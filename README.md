@@ -132,6 +132,12 @@ chmod +x start.sh
 ./start.sh
 ```
 
+The logger starts with the saved settings and begins recording immediately.
+When the live preview window is visible, press **S** to open the settings.
+Recording and sensor collection continue while the settings window is open;
+click **Start Monitoring** to save and apply changes, or close it to keep the
+current settings.
+
 ---
 
 ## Configuration

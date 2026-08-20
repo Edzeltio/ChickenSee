@@ -7,7 +7,7 @@
   "ammonia_warn_ppm": 10.0,
   "ammonia_crit_ppm": 25.0,
   "sound_warn_db": 75.0,
-  "rec_always": false,
+  "rec_always": true,
   "rec_start_h": 6,
   "rec_start_m": 0,
   "rec_end_h": 16,

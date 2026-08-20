@@ -2,10 +2,10 @@
 main.py — Entry point for the sensor logger.
 
 Flow:
-  1. Load .env
-  2. Show startup configuration UI (setup_ui.py)
-  3. Apply chosen settings to config + camera
-  4. Start three daemon threads: collector, sync, camera
+  1. Load .env and saved settings
+  2. Apply settings to config + camera
+  3. Start three daemon threads: collector, sync, camera
+  4. Open settings on request while the threads keep running
 
 Press Ctrl+C or close the preview window to stop cleanly.
 """
@@ -27,7 +27,7 @@ _parser.add_argument(
 )
 _parser.add_argument(
     "--no-ui", action="store_true",
-    help="skip the Tkinter setup window and use settings.json",
+    help="deprecated; saved settings are now always used at startup",
 )
 _args = _parser.parse_args()
 
@@ -41,17 +41,10 @@ else:
 if _args.simulate:
     os.environ["SIMULATE"] = "1"
 
-# ── 2. Show the configuration UI ─────────────────────────────────────────────
-# This blocks until the user clicks "Start Monitoring" (or exits).
+# ── 2. Load saved settings ────────────────────────────────────────────────────
 import setup_ui   # noqa: E402
-
-if _args.no_ui:
-    print("[main] Setup UI skipped — using settings.json.")
-    settings = setup_ui.load_settings()
-else:
-    print("[main] Opening configuration window …")
-    settings = setup_ui.show()   # returns dict; calls sys.exit(0) if window closed
-print("[main] Configuration confirmed — starting system …")
+settings = setup_ui.load_settings()
+print("[main] Using saved settings — starting system …")
 
 # ── 3. Apply settings to config + camera ─────────────────────────────────────
 import config    # noqa: E402
@@ -67,6 +60,7 @@ sync.apply_settings(settings)
 
 def main() -> None:
     stop_event = threading.Event()
+    settings_requested = threading.Event()
 
     def _shutdown(sig, _frame):
         print(f"\n[main] Signal {sig} received — shutting down …")
@@ -82,7 +76,7 @@ def main() -> None:
                          name="collector", daemon=True),
         threading.Thread(target=sync.run,      args=(stop_event,),
                          name="sync",      daemon=True),
-        threading.Thread(target=camera.run,    args=(stop_event,),
+        threading.Thread(target=camera.run,    args=(stop_event, settings_requested),
                          name="camera",    daemon=True),
     ]
 
@@ -90,7 +84,16 @@ def main() -> None:
     for t in threads:
         t.start()
 
-    stop_event.wait()
+    while not stop_event.is_set():
+        if settings_requested.wait(timeout=0.25):
+            settings_requested.clear()
+            print("[main] Opening settings (recording continues) …")
+            updated = setup_ui.show(exit_on_close=False)
+            if updated is not None:
+                config.apply_settings(updated)
+                camera.apply_settings(updated)
+                sync.apply_settings(updated)
+                print("[main] Settings applied while recording continues.")
 
     print("[main] Waiting for threads to finish …")
     for t in threads:

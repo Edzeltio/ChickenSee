@@ -284,7 +284,10 @@ def _open_local_camera(index: int) -> cv2.VideoCapture | None:
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
-def run(stop_event: threading.Event) -> None:
+def run(
+    stop_event: threading.Event,
+    settings_requested: threading.Event | None = None,
+) -> None:
     tapo_endpoints = config.get_tapo_endpoints()
     rtsp_url: str | None = None
     tapo_endpoint_index: int | None = None
@@ -420,7 +423,12 @@ def run(stop_event: threading.Event) -> None:
                             (w_f // 2 - tw // 2, h_f - 16),
                             _FONT, 0.55, (0, 180, 255), 1, _LINE_TYPE)
             cv2.imshow("Sensor Feed", display)
-            if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("s"), ord("S")):
+                if settings_requested is not None:
+                    print("[camera] Settings requested — press S again after closing the settings window.")
+                    settings_requested.set()
+            elif key in (ord("q"), ord("Q"), 27):
                 stop_event.set()
                 break
 
