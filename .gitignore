@@ -1,0 +1,36 @@
+# Ignore everything by default
+*
+
+# Keep this file
+!.gitignore
+
+# Keep tracked files and their parent directories
+!README.md
+!.env.example
+!requirements.txt
+!settings.json
+!start.bat
+!start.sh
+
+!arduino/
+!arduino/sensor_reader/
+!arduino/sensor_reader/sensor_reader.ino
+
+!data/
+!data/sensor_data.db
+
+!python/
+!python/__pycache__/
+!python/__pycache__/camera.cpython-314.pyc
+!python/__pycache__/collector.cpython-314.pyc
+!python/__pycache__/config.cpython-314.pyc
+!python/__pycache__/database.cpython-314.pyc
+!python/__pycache__/setup_ui.cpython-314.pyc
+!python/__pycache__/sync.cpython-314.pyc
+!python/camera.py
+!python/collector.py
+!python/config.py
+!python/database.py
+!python/main.py
+!python/setup_ui.py
+!python/sync.py
