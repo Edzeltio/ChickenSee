@@ -1,5 +1,0 @@
-pyserial
-supabase
-python-dotenv
-opencv-python
-numpy
