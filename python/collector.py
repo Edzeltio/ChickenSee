@@ -185,15 +185,26 @@ def _process(payload: dict) -> None:
     humidity    = payload.get("humidity")      # %    or None (DHT22 null)
     ammonia_raw = payload.get("mq137_raw")     # ADC 0–1023 or None
 
-    # Accept both key names: new .ino uses "sound_rms", old used "sound_peak".
-    sound_raw = payload.get("sound_rms") or payload.get("sound_peak")
+    # Accept raw readings from the current sketch and calculated values from
+    # older sketches.  Do not use `or` here: zero is a valid ADC reading.
+    sound_raw = payload.get("sound_rms")
+    if sound_raw is None:
+        sound_raw = payload.get("sound_peak")
 
     warming = bool(payload.get("warming", 0))
 
     # During MQ-137 warm-up the reading is meaningless — treat as None so the
     # overlay shows the last known good value and no false alert is stored.
-    ammonia_ppm = None if warming else config.adc_to_ppm(ammonia_raw)
-    sound_db    = config.adc_to_db(sound_raw)
+    ammonia_ppm = None if warming else (
+        config.adc_to_ppm(ammonia_raw)
+        if ammonia_raw is not None
+        else payload.get("ammonia_ppm")
+    )
+    sound_db = (
+        config.adc_to_db(sound_raw)
+        if sound_raw is not None
+        else payload.get("sound_db")
+    )
 
     t_status = config.eval_temp(temperature)
     h_status = config.eval_humidity(humidity)

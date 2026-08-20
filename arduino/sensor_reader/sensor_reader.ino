@@ -84,6 +84,8 @@ const float b = 0.323;      // Intercept from the MQ-137 datasheet log-log curve
 DHT dht(DHT_PIN, DHT_TYPE);
 
 unsigned long lastSampleAt = 0;
+int lastMq137Raw = 0;
+int lastSoundRms = 0;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +100,7 @@ float readMQ137AndCalculatePPM() {
     delay(5);
   }
   float rawAverage = (float)sum / MQ137_SAMPLES;
+  lastMq137Raw = (int)round(rawAverage);
   float VRL = rawAverage * (5.0 / 1023.0); 
   
   // Safety clipping to prevent division-by-zero or infinite logs
@@ -131,6 +134,7 @@ float readSoundAndCalculateDB() {
     delay(2);
   }
   float rms = sqrt((float)sumSq / SOUND_SAMPLES);
+  lastSoundRms = (int)round(rms);
   float volts = (rms * 5.0) / 1023.0;
   
   float db = 35.0; // Baseline room noise
@@ -214,10 +218,18 @@ void loop() {
   dtostrf(ammonia_ppm, 1, 2, abuf); // Ammonia output formatted to 2 decimals
   json += abuf;
 
+  // Raw ADC values are included for the Python logger's canonical
+  // conversions and for calibration/debugging.
+  json += F(",\"mq137_raw\":");
+  json += lastMq137Raw;
+
   json += F(",\"sound_db\":");
   char sbuf[10];
   dtostrf(sound_db, 1, 1, sbuf); // Sound dB output formatted to 1 decimal
   json += sbuf;
+
+  json += F(",\"sound_rms\":");
+  json += lastSoundRms;
 
   json += F(",\"warming\":");
   json += warming;
