@@ -1,0 +1,10 @@
+pyserial
+supabase
+python-dotenv
+opencv-python
+numpy
+numpy
+opencv-python
+pyserial
+python-dotenv
+supabase
