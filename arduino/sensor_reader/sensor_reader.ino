@@ -59,20 +59,12 @@
 // [CONFIG] Number of ADC samples averaged for the MQ-137 reading.
 #define MQ137_SAMPLES        16
 
-// [CONFIG] Calibration parameters for MQ-137 (Ammonia Gas)
-const float RL = 47.0;      // Load resistance in Kilo-Ohms on your MQ module
-const float Ro = 20.0;      // Sensor resistance in clean air (estimated)
-const float m = -0.243;     // Slope from the MQ-137 datasheet log-log curve
-const float b = 0.323;      // Intercept from the MQ-137 datasheet log-log curve
+// Ammonia calibration is applied in python/config.py. Send ADC counts here so
+// calibration is performed in one place and out-of-range readings stay visible.
 
-// [CONFIG] Number of ADC samples used to compute sound RMS.
-#define SOUND_SAMPLES        100
-
-// [CONFIG] How many times to retry a failed DHT22 read before sending null.
-#define DHT_RETRIES          5
-
-// [CONFIG] Delay between DHT22 retries (ms). Minimum reliable gap is 250 ms.
-#define DHT_RETRY_DELAY_MS   300
+// [CONFIG] Number of sound samples in each RMS window.
+// On an Uno, 800 analogRead calls take about 90 ms and fit in a 32-bit sumSq.
+#define SOUND_SAMPLES        800
 
 // ════════════════════════════════════════════════════════════════════════════
 // END CONFIGURATION
@@ -81,78 +73,75 @@ const float b = 0.323;      // Intercept from the MQ-137 datasheet log-log curve
 DHT dht(DHT_PIN, DHT_TYPE);
 
 unsigned long lastSampleAt = 0;
+unsigned long bootAt = 0;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /*
-  readMQ137AndCalculatePPM()
-  Averages MQ137_SAMPLES ADC reads and mathematically converts the output to PPM.
+  Return the averaged ADC count. Keep conversion/calibration in Python so the
+  raw measurement is retained and high readings cannot silently become zero.
 */
-float readMQ137AndCalculatePPM() {
-  long sum = 0;
+uint16_t readMQ137Raw() {
+  unsigned long sum = 0;
   for (int i = 0; i < MQ137_SAMPLES; i++) {
     sum += analogRead(MQ137_PIN);
     delay(5);
   }
-  float rawAverage = (float)sum / MQ137_SAMPLES;
-  float VRL = rawAverage * (5.0 / 1023.0); 
-  
-  // Safety clipping to prevent division-by-zero or infinite logs
-  if (VRL > 4.95) VRL = 4.95;
-  if (VRL < 0.05) VRL = 0.05;
-
-  float Rs = ((5.0 * RL) / VRL) - RL;       
-  float ratio = Rs / Ro;                     
-  float ppm = 0.0;
-
-  if (ratio > 0.01 && ratio < 100.0) {
-    ppm = pow(10, ((log10(ratio) - b) / m));   
-  }
-
-  if (isnan(ppm) || isinf(ppm) || ppm < 0.0 || ppm > 200.0) {
-    ppm = 0.0;
-  }
-  return ppm;
+  return (uint16_t)((sum + MQ137_SAMPLES / 2) / MQ137_SAMPLES);
 }
 
 /*
-  readSoundAndCalculateDB()
-  Computes the RMS amplitude of the AC component of the LM386 output,
-  then converts it into decibel (dB) pressure levels.
+  Measure AC RMS around the LM386 module's DC midpoint, then scale it to
+  0..1023 for python/config.py. This is a relative level, not calibrated SPL.
+  No delay is used between analog reads: the former 2 ms delay undersampled
+  audio and could miss most of its frequency content.
 */
-float readSoundAndCalculateDB() {
-  // The LM386 output's DC midpoint is not guaranteed to be exactly 512 and
-  // can move with supply voltage and gain. Measure the midpoint for this
-  // sample window, then calculate only the AC variation around it.
-  long sum = 0;
-  long sumSq = 0;
+uint16_t readSoundRmsRaw() {
+  unsigned long sum = 0;
+  unsigned long sumSq = 0;
   for (int i = 0; i < SOUND_SAMPLES; i++) {
-    long sample = analogRead(SOUND_PIN);
+    unsigned long sample = (unsigned long)analogRead(SOUND_PIN);
     sum += sample;
     sumSq += sample * sample;
-    delay(2);
   }
+
   float midpoint = (float)sum / SOUND_SAMPLES;
   float variance = ((float)sumSq / SOUND_SAMPLES) - (midpoint * midpoint);
   if (variance < 0.0) variance = 0.0;
-  float rms = sqrt(variance);
-  float volts = (rms * 5.0) / 1023.0;
-  
-  float db = 35.0; // Baseline room noise
-  if (volts > 0.001) {
-    db = (20.0 * log10(volts / 0.001)) + 40.0; // Dynamic scale conversion with offset
-  }
-  
-  if (db < 35.0) db = 35.0;
-  if (db > 90.0) db = 90.0;
-  
-  return db;
+  float fullScaleRms = sqrt(variance) * 2.0;
+  if (fullScaleRms > 1023.0) fullScaleRms = 1023.0;
+  return (uint16_t)(fullScaleRms + 0.5);
+}
+
+void printReading(float temperature, float humidity, uint16_t ammoniaRaw,
+                  uint16_t soundRmsRaw, bool warming) {
+  // Stream JSON directly instead of building a heap-allocated Arduino String.
+  // These field names match python/collector.py's raw-reading format.
+  Serial.print(F("{\"temperature\":"));
+  if (isnan(temperature)) Serial.print(F("null"));
+  else Serial.print(temperature, 1);
+
+  Serial.print(F(",\"humidity\":"));
+  if (isnan(humidity)) Serial.print(F("null"));
+  else Serial.print(humidity, 1);
+
+  Serial.print(F(",\"mq137_raw\":"));
+  Serial.print(ammoniaRaw);
+
+  Serial.print(F(",\"sound_rms\":"));
+  Serial.print(soundRmsRaw);
+
+  Serial.print(F(",\"warming\":"));
+  Serial.print(warming ? 1 : 0);
+  Serial.println('}');
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────
 
 void setup() {
   Serial.begin(BAUD_RATE);
+  bootAt = millis();
+  lastSampleAt = bootAt;
 
   // Wait up to 3 s for the serial port to enumerate (needed on CH340/CP2102).
   unsigned long t = millis();
@@ -175,64 +164,21 @@ void loop() {
   if (now - lastSampleAt < SAMPLE_INTERVAL_MS) return;
   lastSampleAt = now;
 
-  // ── 1. Determine MQ-137 warm-up state ────────────────────────────────────
-  int warming = (now < MQ137_WARMUP_MS) ? 1 : 0;
+  // Unsigned elapsed-time subtraction stays correct when millis() rolls over.
+  bool warming = (unsigned long)(now - bootAt) < MQ137_WARMUP_MS;
 
   // ── 2. Read analog sensors BEFORE any Serial activity ────────────────────
-  float ammonia_ppm = readMQ137AndCalculatePPM();
-  float sound_db = readSoundAndCalculateDB();
+  uint16_t ammoniaRaw = readMQ137Raw();
+  uint16_t soundRmsRaw = readSoundRmsRaw();
 
-  // ── 3. Read DHT22 with retry ──────────────────────────────────────────────
+  // ── 3. Read DHT22 once per interval ───────────────────────────────────────
+  // Adafruit's library caches reads for 2 seconds. Short-delay retries simply
+  // return the same cached failure, so emit null and try again next interval.
   float temperature = NAN;
   float humidity    = NAN;
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
 
-  for (int attempt = 0; attempt < DHT_RETRIES; attempt++) {
-    temperature = dht.readTemperature();
-    humidity    = dht.readHumidity();
-    if (!isnan(temperature) && !isnan(humidity)) break;
-    if (attempt < DHT_RETRIES - 1) delay(DHT_RETRY_DELAY_MS);
-  }
-
-  // ── 4. Build JSON using String, then send in one Serial.println ──────────
-  String json = F("{\"temperature\":");
-
-  if (isnan(temperature)) {
-    json += F("null");
-  } else {
-    char tbuf[10];
-    dtostrf(temperature, 1, 1, tbuf); // Formatted to 1 decimal point for clean display
-    json += tbuf;
-  }
-
-  json += F(",\"humidity\":");
-
-  if (isnan(humidity)) {
-    json += F("null");
-  } else {
-    char hbuf[10];
-    dtostrf(humidity, 1, 1, hbuf);
-    json += hbuf;
-  }
-
-  // Keep the wire format limited to the four required sensor values.
-  json += F(",\"ammonia\":");
-  if (warming) {
-    json += F("null");
-  } else {
-    char abuf[10];
-    dtostrf(ammonia_ppm, 1, 2, abuf);
-    json += abuf;
-  }
-
-  json += F(",\"sound\":");
-  char sbuf[10];
-  dtostrf(sound_db, 1, 1, sbuf);
-  json += sbuf;
-
-  json += '}';
-
-  Serial.println(json);
-
-  // Flush ensures every byte is transmitted before the next loop iteration.
-  Serial.flush();
+  // ── 4. Emit one JSON line for the Python collector ────────────────────────
+  printReading(temperature, humidity, ammoniaRaw, soundRmsRaw, warming);
 }
