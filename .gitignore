@@ -4,6 +4,8 @@
 !.env.example
 !.env.*.example
 
+.replit
+
 # Python-generated files and local environments.
 __pycache__/
 *.py[cod]
