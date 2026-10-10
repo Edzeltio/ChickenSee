@@ -1,6 +1,7 @@
 modules = ["python-3.12", "bash"]
 [nix]
 channel = "stable-25_05"
+packages = ["libGL", "libGLU", "xorg.libxcb", "xorg.libX11", "xorg.libXext", "xorg.libICE", "xorg.libSM", "glib"]
 
 [agent]
 expertMode = true

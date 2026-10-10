@@ -5,17 +5,16 @@ Records continuous video to hourly MP4 segments.
 Sensor values and alert status are burned into every frame.
 """
 
-import os
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 
 import cv2
 import numpy as np
 
 import config
 import collector   # live telemetry snapshot
+from recording import Recording, video_time
 
 # ── Recording schedule ────────────────────────────────────────────────────────
 # Populated by apply_settings() before run() is called.
@@ -35,7 +34,7 @@ _overlay: dict = {
     "show_humidity":    True,
     "show_ammonia":     True,
     "show_sound":       True,
-    "overlay_position": "top-left",
+    "overlay_position": "bottom-left",
 }
 
 # Sensor key → (display label, data keys, unit, decimals, eval function)
@@ -120,8 +119,8 @@ def _fmt(val, unit: str, decimals: int = 1) -> str:
     return f"{round(float(val), decimals)}{unit}" if decimals else f"{int(val)}{unit}"
 
 
-def _draw_overlay(frame: np.ndarray, data: dict) -> np.ndarray:
-    """Burn the HUD onto frame.  Respects _overlay toggle + sensor selection."""
+def _draw_overlay(frame: np.ndarray, data: dict, elapsed: float = 0) -> np.ndarray:
+    """Append a sensor strip below the image; never draw over camera pixels."""
 
     # Nothing to do if the whole overlay is disabled
     if not _overlay.get("overlay_enabled", True):
@@ -150,30 +149,39 @@ def _draw_overlay(frame: np.ndarray, data: dict) -> np.ndarray:
     line_gap        = 6
 
     # ── Measure all lines to size the box ────────────────────────────────────
-    hdr_text  = f"  {now.strftime('%Y-%m-%d')}   {now.strftime('%H:%M:%S')}  "
+    hdr_text  = f"  Video {video_time(elapsed)} | {now.strftime('%Y-%m-%d %H:%M:%S')}"
     time_text = f"  Last: {recorded}"
 
     sensor_texts  = [f"  {lbl:11s}: {val}  {config.STATUS_LABEL[st]}" for lbl, val, st in rows]
     all_texts     = [hdr_text] + sensor_texts + [time_text]
     all_scales    = [font_scale_hdr] + [font_scale_row] * len(rows) + [font_scale_time]
 
+    # Fit narrow camera feeds without changing/cropping the original image.
+    max_text_width = max(
+        cv2.getTextSize(t, _FONT, s, thickness)[0][0]
+        for t, s in zip(all_texts, all_scales)
+    )
+    fit = min(1.0, max(1, frame.shape[1] - padding * 2 - 24) / max_text_width)
+    font_scale_hdr *= fit
+    font_scale_row *= fit
+    font_scale_time *= fit
+    all_scales = [font_scale_hdr] + [font_scale_row] * len(rows) + [font_scale_time]
     sizes = [cv2.getTextSize(t, _FONT, s, thickness)[0] for t, s in zip(all_texts, all_scales)]
     box_w = max(w for w, _ in sizes) + padding * 2
     box_h = padding * 2 + sum(h for _, h in sizes) + line_gap * len(all_texts) + 4
 
     # ── Position — use runtime setting, fall back to config ──────────────────
-    h_f, w_f = frame.shape[:2]
+    image_h, w_f = frame.shape[:2]
+    footer_h = box_h + 24
+    # MP4 codecs generally require even dimensions.
+    footer_h += (image_h + footer_h) % 2
+    frame = np.concatenate((frame, np.zeros((footer_h, w_f, 3), dtype=frame.dtype)))
+    h_f = frame.shape[0]
     margin    = 12
     pos       = _overlay.get("overlay_position", config.OVERLAY_POSITION)
 
-    if pos == "top-right":
-        bx, by = w_f - box_w - margin, margin
-    elif pos == "bottom-left":
-        bx, by = margin, h_f - box_h - margin
-    elif pos == "bottom-right":
-        bx, by = w_f - box_w - margin, h_f - box_h - margin
-    else:   # top-left (default)
-        bx, by = margin, margin
+    bx = w_f - box_w - margin if pos.endswith("right") else margin
+    by = image_h + margin
 
     # Clamp to frame edges
     bx = max(0, min(bx, w_f - box_w))
@@ -227,17 +235,6 @@ def _draw_overlay(frame: np.ndarray, data: dict) -> np.ndarray:
                 _FONT, font_scale_time, _COLOR["separator"], thickness, _LINE_TYPE)
 
     return frame
-
-
-# ── Video segment writer ──────────────────────────────────────────────────────
-def _new_writer(width: int, height: int) -> tuple[cv2.VideoWriter, str]:
-    Path(config.VIDEO_SAVE_PATH).mkdir(parents=True, exist_ok=True)
-    ts   = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    path = str(Path(config.VIDEO_SAVE_PATH) / f"rec_{ts}{config.VIDEO_EXT}")
-    fourcc = cv2.VideoWriter_fourcc(*config.VIDEO_FOURCC)
-    writer = cv2.VideoWriter(path, fourcc, config.VIDEO_FPS, (width, height))
-    print(f"[camera] Recording → {path}")
-    return writer, path
 
 
 # ── Camera open helpers ───────────────────────────────────────────────────────
@@ -335,114 +332,95 @@ def run(
                     else f"local camera [{config.TAPO_FALLBACK_CAMERA_INDEX}]")
     print(f"[camera] {source_label} — {actual_w}×{actual_h} @ {config.VIDEO_FPS} fps")
 
-    writer: cv2.VideoWriter | None = None
-    seg_start   = time.time()
-    frame_delay = 1.0 / config.VIDEO_FPS
-    was_recording = False   # track transitions for log messages
+    _record_loop(cap, stop_event, settings_requested, tapo_endpoints, using_rtsp)
 
-    while not stop_event.is_set():
-        loop_start = time.time()
 
-        ok, frame = cap.read()
-        if not ok:
-            print(f"[camera] Feed lost — retrying in "
-                  f"{config.TAPO_RECONNECT_DELAY_S:.0f} s …")
-            cap.release()
-            cap = None
-            time.sleep(config.TAPO_RECONNECT_DELAY_S)
-
-            # Reconnect to whichever source is active
-            if using_rtsp:
-                cap, rtsp_url, tapo_endpoint_index = _open_rtsp_with_retries(
-                    tapo_endpoints, 1
-                )
-                if cap is None:
-                    print("[camera] RTSP reconnect failed — will retry …")
+def _record_loop(cap, stop_event, settings_requested, tapo_endpoints, using_rtsp):
+    recording: Recording | None = None
+    print("[camera] Preview keys: M = save video + SQLite, S = settings, Q/Esc = save and quit.")
+    try:
+        while not stop_event.is_set():
+            loop_start = time.monotonic()
+            ok, frame = cap.read() if cap is not None else (False, None)
+            if not ok:
+                # Do not append post-reconnect footage to a clip with a hidden gap.
+                if recording:
+                    recording.close("feed_lost")
+                    recording = None
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                print("[camera] Feed lost — retrying …")
+                if stop_event.wait(config.TAPO_RECONNECT_DELAY_S):
+                    break
+                if using_rtsp:
+                    cap, _, _ = _open_rtsp_with_retries(tapo_endpoints, 1)
                 else:
-                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    label = tapo_endpoints[tapo_endpoint_index][0]
-                    print(f"[camera] Tapo {label} reconnected — {actual_w}×{actual_h}")
-            else:
-                cap = _open_local_camera(config.TAPO_FALLBACK_CAMERA_INDEX)
-                if cap is None:
-                    print("[camera] Local camera reconnect failed — will retry …")
-                else:
-                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    print(f"[camera] Local camera reconnected — {actual_w}×{actual_h}")
-            continue
+                    cap = _open_local_camera(config.TAPO_FALLBACK_CAMERA_INDEX)
+                continue
 
-        # Burn overlay into frame
-        data  = collector.get_live()
-        frame = _draw_overlay(frame, data)
+            active = _in_recording_window()
+            data = collector.get_live()
+            elapsed = recording.elapsed if recording else 0
+            raw_frame = frame
+            frame = _draw_overlay(raw_frame, data, elapsed)
+            size = (frame.shape[1], frame.shape[0])
 
-        # ── Recording schedule check ──────────────────────────────────────────
-        active = _in_recording_window()
+            if recording:
+                reason = None
+                if not active:
+                    reason = "schedule_end"
+                elif size != recording.size:
+                    reason = "settings_or_resolution_changed"
+                elif time.monotonic() - recording.started >= config.VIDEO_SEGMENT_DURATION:
+                    reason = "automatic"
+                if reason:
+                    recording.close(reason)
+                    recording = None
+                    # This frame belongs to the new clip, starting at 00:00.
+                    # Redraw from original image, not from the existing footer.
+                    frame = _draw_overlay(raw_frame, data, 0)
 
-        if active and not was_recording:
-            # Entered the recording window — open a new segment
-            writer, _ = _new_writer(actual_w, actual_h)
-            seg_start = time.time()
-            was_recording = True
+            if active:
+                if recording is None:
+                    recording = Recording(frame.shape[1], frame.shape[0])
+                recording.write(frame, data)
 
-        elif not active and was_recording:
-            # Left the recording window — release the current file
-            if writer:
-                writer.release()
-                writer = None
-            sh = _schedule["rec_start_h"]
-            sm = _schedule["rec_start_m"]
-            print(f"[camera] Outside recording window — paused until "
-                  f"{sh:02d}:{sm:02d}.")
-            was_recording = False
-
-        # Write frame only when inside the window
-        if active and writer:
-            writer.write(frame)
-
-            # Rotate segment when duration is exceeded
-            if time.time() - seg_start >= config.VIDEO_SEGMENT_DURATION:
-                writer.release()
-                writer, _ = _new_writer(actual_w, actual_h)
-                seg_start = time.time()
-
-        # ── Preview window ────────────────────────────────────────────────────
-        if config.SHOW_PREVIEW:
-            # Show a "PAUSED" banner when outside the recording window
-            display = frame.copy()
-            if not active:
-                h_f, w_f = display.shape[:2]
-                msg = "REC PAUSED — outside scheduled window"
-                (tw, th), _ = cv2.getTextSize(msg, _FONT, 0.55, 1)
-                cv2.rectangle(display,
-                              (w_f // 2 - tw // 2 - 8, h_f - 36),
-                              (w_f // 2 + tw // 2 + 8, h_f - 10),
-                              (0, 0, 0), -1)
-                cv2.putText(display, msg,
-                            (w_f // 2 - tw // 2, h_f - 16),
-                            _FONT, 0.55, (0, 180, 255), 1, _LINE_TYPE)
-            cv2.imshow("Sensor Feed", display)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("s"), ord("S")):
-                if settings_requested is not None:
-                    print("[camera] Settings requested — press S again after closing the settings window.")
+            if config.SHOW_PREVIEW:
+                display = frame.copy()
+                msg = "M: save | S: settings | Q: save and quit"
+                if not active:
+                    msg = "REC PAUSED | S: settings | Q: quit"
+                # Controls are preview-only, not burned into the saved MP4.
+                cv2.putText(display, msg, (10, display.shape[0] - 4),
+                            _FONT, 0.4, _COLOR["text"], 1, _LINE_TYPE)
+                cv2.imshow("Sensor Feed", display)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("m"), ord("M")):
+                    if recording:
+                        recording.close("manual")
+                        recording = None
+                    else:
+                        print("[camera] Nothing to save — outside the recording schedule.")
+                elif key in (ord("s"), ord("S")) and settings_requested is not None:
                     settings_requested.set()
-            elif key in (ord("q"), ord("Q"), 27):
-                stop_event.set()
-                break
+                elif key in (ord("q"), ord("Q"), 27):
+                    stop_event.set()
+                elif cv2.getWindowProperty("Sensor Feed", cv2.WND_PROP_VISIBLE) < 1:
+                    stop_event.set()
 
-        # Pace the loop to target FPS
-        elapsed = time.time() - loop_start
-        sleep   = frame_delay - elapsed
-        if sleep > 0:
-            time.sleep(sleep)
-
-    # Cleanup
-    if writer:
-        writer.release()
-    if cap is not None:
-        cap.release()
-    if config.SHOW_PREVIEW:
-        cv2.destroyAllWindows()
-    print("[camera] Stopped.")
+            stop_event.wait(max(0, 1.0 / config.VIDEO_FPS - (time.monotonic() - loop_start)))
+    except Exception as exc:
+        print(f"[camera] Recording failed: {exc}")
+        stop_event.set()
+        raise
+    finally:
+        try:
+            if recording:
+                recording.close("shutdown")
+        finally:
+            if cap is not None:
+                cap.release()
+            if config.SHOW_PREVIEW:
+                cv2.destroyAllWindows()
+        print("[camera] Stopped.")

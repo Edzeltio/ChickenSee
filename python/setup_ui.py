@@ -43,7 +43,7 @@ DEFAULTS: dict = {
     "show_humidity":    True,   # humidity row
     "show_ammonia":     True,   # ammonia row
     "show_sound":       True,   # sound row
-    "overlay_position": "top-left",   # top-left / top-right / bottom-left / bottom-right
+    "overlay_position": "bottom-left",   # alignment within the separate bottom strip
 }
 
 SEGMENT_OPTIONS = [
@@ -70,7 +70,7 @@ SYNC_OPTIONS = [
     ("30 minutes",  1800),
 ]
 
-POSITION_OPTIONS = ["top-left", "top-right", "bottom-left", "bottom-right"]
+POSITION_OPTIONS = ["bottom-left", "bottom-right"]
 SETTINGS_LOAD_WARNING: str | None = None
 
 
@@ -154,6 +154,9 @@ def _read_settings_file() -> dict:
     if not isinstance(saved, dict):
         raise ValueError("The settings file must contain a JSON object.")
     settings = {**DEFAULTS, **saved}
+    # Old top positions now mean alignment in the non-obscuring bottom strip.
+    if settings.get("overlay_position") in ("top-left", "top-right"):
+        settings["overlay_position"] = settings["overlay_position"].replace("top", "bottom")
     errors = _validate_values(settings)
     if errors:
         raise ValueError("Invalid saved settings: " + " ".join(errors))
@@ -532,7 +535,7 @@ class SetupUI:
         hrow.pack(fill="x", pady=(0, 10))
         _label(hrow, "  VIDEO OVERLAY", font=FONT_HEAD,
                fg=ACCENT, bg=PANEL).pack(side="left")
-        _label(hrow, "  Choose which sensors appear burned into recorded video",
+        _label(hrow, "  Sensors appear below the camera image, never over it",
                font=FONT_SMALL, fg=SUB, bg=PANEL).pack(side="left")
 
         _sep(panel, pady=(0, 10))
@@ -543,7 +546,7 @@ class SetupUI:
         master_row.pack(fill="x", pady=(0, 6))
         tk.Checkbutton(
             master_row,
-            text="  Show sensor overlay on recorded video",
+            text="  Show sensor strip below recorded video",
             variable=self._overlay_enabled_var,
             font=("Segoe UI", 10, "bold"), fg=TEXT, bg=PANEL,
             selectcolor=ENTRY, activebackground=PANEL, activeforeground=TEXT,
@@ -583,10 +586,10 @@ class SetupUI:
         pos_frame = _frame(panel, bg=PANEL)
         pos_frame.pack(fill="x")
 
-        _label(pos_frame, "Position on video frame:",
+        _label(pos_frame, "Bottom strip alignment:",
                font=FONT_LABEL, fg=TEXT, bg=PANEL).pack(side="left", padx=(0, 10))
 
-        self._overlay_pos_sv = tk.StringVar(value=s.get("overlay_position", "top-left"))
+        self._overlay_pos_sv = tk.StringVar(value=s.get("overlay_position", "bottom-left"))
         pos_menu = tk.OptionMenu(pos_frame, self._overlay_pos_sv, *POSITION_OPTIONS)
         pos_menu.config(
             bg=ENTRY, fg=TEXT, activebackground=ACCENT, activeforeground=TEXT,
@@ -676,7 +679,7 @@ class SetupUI:
         # ── Segment duration ──────────────────────────────────────────────────
         seg_frame = _frame(panel, bg=PANEL)
         seg_frame.pack(fill="x")
-        _label(seg_frame, "Save a new video file every:",
+        _label(seg_frame, "Auto-save video + SQLite every:",
                font=FONT_LABEL, fg=TEXT, bg=PANEL).pack(side="left", padx=(0, 10))
 
         seg_labels = [label for label, _ in SEGMENT_OPTIONS]
@@ -694,6 +697,9 @@ class SetupUI:
         seg_menu["menu"].config(bg=PANEL, fg=TEXT, activebackground=ACCENT,
                                 activeforeground=TEXT, font=FONT_LABEL)
         seg_menu.pack(side="left")
+        _label(panel, "M: save current video + SQLite folder and continue recording.  "
+               "S: settings.  Q: save and quit.",
+               font=FONT_SMALL, fg=SUB, bg=PANEL).pack(anchor="w", pady=(10, 0))
 
         # Apply initial toggle state
         self._toggle_schedule()
@@ -876,7 +882,7 @@ class SetupUI:
         self._show_humidity_var.set(d["show_humidity"])
         self._show_ammonia_var.set(d["show_ammonia"])
         self._show_sound_var.set(d["show_sound"])
-        self._overlay_pos_sv.set(d.get("overlay_position", "top-left"))
+        self._overlay_pos_sv.set(d.get("overlay_position", "bottom-left"))
         self._toggle_overlay()
 
     def _on_close(self) -> None:

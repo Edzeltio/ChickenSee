@@ -19,5 +19,5 @@
   "show_sound": true,
   "segment_seconds": 3600,
   "sync_interval_s": 5,
-  "overlay_position": "top-left"
+  "overlay_position": "bottom-left"
 }

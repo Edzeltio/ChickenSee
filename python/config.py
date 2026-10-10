@@ -152,9 +152,9 @@ VIDEO_SAVE_PATH: str = str(SENSOR_DIR / "recordings")
 # [CONFIG] Length of each video segment in seconds. 3600 = 1 hour.
 VIDEO_SEGMENT_DURATION: int = 3600
 
-# [CONFIG] Where to place the sensor overlay on the video frame.
-#   Options: "top-left", "top-right", "bottom-left", "bottom-right"
-OVERLAY_POSITION: str = "top-left"
+# [CONFIG] Alignment in the sensor strip appended below the camera image.
+#   Options: "bottom-left", "bottom-right"
+OVERLAY_POSITION: str = "bottom-left"
 
 # [CONFIG] Camera capture resolution — must match your camera's native resolution.
 VIDEO_WIDTH:  int = 1280

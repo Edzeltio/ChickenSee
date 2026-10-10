@@ -149,6 +149,49 @@ Recording and sensor collection continue while the settings window is open;
 click **Start Monitoring** to save and apply changes, or close it to keep the
 current settings.
 
+### Paired video and sensor saves
+
+With the **Sensor Feed** preview focused:
+- Press **M** to save the current segment immediately. Recording continues in a
+  new folder, and the automatic-save timer restarts.
+- Press **S** to open Settings. **Auto-save video + SQLite every** controls the
+  save interval (3 minutes through 8 hours).
+- Press **Q** or **Esc** to save the current segment and stop. Closing the
+  preview or using Ctrl+C also finalizes the current recording.
+
+Each segment has its own folder under `recordings/`:
+
+```text
+recordings/rec_2026-10-10_14-30-00_123456/
+├── video.mp4
+└── sensors.sqlite
+```
+
+The standalone SQLite file contains:
+- `sensor_logs`: one snapshot per saved video frame, with `frame_index` (starting
+  at 0), `elapsed_seconds`, `video_time` (starting at `00:00`), sensor values,
+  raw ADC readings, alert flags, and the original reading timestamp.
+- `recording`: video filename, FPS, dimensions, start/end times, frame count,
+  duration, and save reason (`manual`, `automatic`, `schedule_end`, etc.).
+
+Elapsed sensor time follows the encoded MP4 timeline (`frame_index / fps`),
+so sensor snapshots match video playback even if the stream slows down.
+Snapshots repeat the latest displayed reading until a new reading arrives;
+missing readings remain N/A rather than being invented. `recorded_at` identifies
+the age of the reading; `captured_at` is when the frame snapshot was taken.
+The central SQLite database and Supabase sync continue unchanged.
+
+The sensor HUD is in a **separate black strip below the camera image**. The
+original image is not obscured, cropped, or resized; the MP4 is taller by the
+height of the strip. Detection should use the original camera region, excluding
+this strip. Left/right alignment and sensor visibility are adjustable in
+Settings. Old top-position settings are automatically mapped to the bottom.
+If the feed disconnects, the current pair is finalized and reconnection starts
+a fresh pair instead of hiding a gap in one recording.
+
+Keyboard controls require a desktop preview (`SHOW_PREVIEW=true`). With preview
+disabled, timed saves and clean-shutdown saves still work; M is unavailable.
+
 ---
 
 ## Configuration
@@ -165,7 +208,7 @@ All settings are in `sensor/python/config.py` — every tunable value is marked 
 | `TAPO_STREAM` | `main` | `"main"` = 1080p/2K, `"sub"` = ~360p |
 | `TAPO_RECONNECT_DELAY_S` | `5.0` | Seconds between reconnect attempts |
 | `SHOW_PREVIEW` | `True` on Windows, `False` on Linux | Live preview window |
-| `VIDEO_SEGMENT_DURATION` | `3600` | Seconds per file (1 hour) |
+| `VIDEO_SEGMENT_DURATION` | `3600` | Seconds per paired video/SQLite save (1 hour) |
 | `SYNC_INTERVAL_S` | `30` | Supabase sync every 30 s |
 | `MQ137_MAX_PPM` | `100` | Calibrate against reference gas |
 

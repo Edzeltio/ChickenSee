@@ -173,7 +173,7 @@ def get_latest() -> dict | None:
     row = conn.execute(
         """
         SELECT temperature, humidity,
-               ammonia_ppm, sound_db,
+                ammonia_ppm, ammonia_raw, sound_db, sound_raw,
                temp_status, hum_status, ammonia_status, sound_status,
                recorded_at
         FROM   sensor_logs
